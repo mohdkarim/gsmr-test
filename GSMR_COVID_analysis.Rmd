@@ -1,0 +1,140 @@
+---
+title: "GSMR_COVID_uk10k"
+author: "mak"
+date: "13/10/2020"
+output: html_document
+---
+
+# GSMR for COVID HGI (Using UK10K)
+
+GSMR (Generalised Summary data-based Mendelian randomisation) requires three types of data to run:
+
+1. Exposure data
+2. Outcome data
+3. Reference panel data
+
+These three data types need to be in a standard COJO format:
+
+https://cnsgenomics.com/software/gcta/#GSMR
+
+## Standard GSMR format example
+
+```{r}
+# SNP A1  A2  freq    b   se  p   N
+# rs1000000   G   A   0.781838245 1.00E-04    0.0044  0.9819  231410
+# rs10000010  T   C   0.513760872 -0.0029 0.003   0.3374  322079
+# rs10000012  G   C   0.137219265 -0.0095 0.0054  0.07853 233933
+# rs10000013  A   C   0.775931455 -0.0095 0.0044  0.03084 233886
+```
+
+## Reference panel: UK10K
+
+```{r}
+# Copy UK10K from farm to my google VM
+
+# ssh farm5-login
+
+# cd /
+
+# gcloud compute scp --recurse lustre/scratch115/projects/otcoregen/em21/uk_biobank_analysis/create_10k_subsample/output/ukb_v3_downsampled10k_plink mohd-analysis-gsmr3-uk10k:~/ --zone=europe-west1-d
+
+# create path files for GSMR
+
+# ls -d $PWD/ukb_v3_downsampled10k_plink/* | sed 's/.bed//' | sed 's/.bim//' | sed 's/.fam//' | uniq > ukb_v3_downsampled10k_plink.txt
+
+```
+
+## Exposure: Sun cis-pQTLs
+
+```{r}
+library(bigrquery)
+
+project <- "open-targets-genetics" # replace this with your project ID 
+
+# Create vector of Sun proteins from gcloud
+
+qry1 <- "SELECT
+  DISTINCT phenotype_id
+FROM
+  `mohd_hypothesis.sun2018`"
+
+prots <- bq_project_query(project, qry1) %>% bq_table_download()
+
+#prots2 <- gsub("(.+?)(\\_.*)", "\\1", prots$phenotype_id)
+
+# Creating separate sumstats for each protein in gcloud and send to my google bucket
+
+sapply(seq_along(prots$phenotype_id), function (x) {
+  
+  # build query
+  
+  prot <- prots$phenotype_id[x]
+  
+  print(prot)
+  
+  project <- "open-targets-genetics"
+  
+  #qry <- paste0("SELECT CONCAT(g.chr, ':', pos, ':', ref, ':', alt) AS SNP, alt AS A1, ref AS A2, eaf AS freq, beta AS b, se, pval AS p, n_total AS N FROM `mohd_hypothesis.sun2018` m INNER JOIN `190505.genes` g ON m.gene_id = g.gene_id WHERE phenotype_id = ", "'", prot, "'")
+  
+  qry <- paste0("WITH 
+  BIG_QUERY AS (
+WITH
+  BIG_SUB_QUERY AS (
+  SELECT
+    CONCAT(g.chr, ':', pos, ':', ref, ':', alt) AS SNP,
+    alt AS A1,
+    ref AS A2,
+    eaf AS freq,
+    beta AS b,
+    se,
+    pval AS p,
+    n_total AS N
+  FROM
+  `mohd_hypothesis.sun2018` m
+INNER JOIN
+  `190505.genes` g
+ON
+  m.gene_id = g.gene_id
+WHERE phenotype_id = ", "'", prot, "'", ")",
+"SELECT
+  *
+FROM (
+  SELECT
+    *,
+    ROW_NUMBER() OVER (PARTITION BY SNP) row_number
+  FROM
+    BIG_SUB_QUERY)
+WHERE
+  row_number = 1)
+  SELECT
+    SNP,
+    A1,
+    A2,
+    freq,
+    b,
+    se,
+    p,
+    N
+   FROM
+    BIG_QUERY")
+  
+  # run bigquery
+  
+  tb <- bq_project_query(project, qry)
+  
+  # save in my gcloud bucket
+  
+  bq_perform_extract(tb, paste0("gs://genetics-portal-analysis/mohd/sun2018-formated-gsmr-3-dedup/", prot, "_gsmr"), destination_format = "CSV", print_header = FALSE)
+  
+  
+})
+
+# Run this in command line to create a text file of all Sun cis-proteins
+
+#gsutil ls gs://genetics-portal-analysis/mohd/sun2018-formated-gsmr-2 | grep -e "_gsmr$" > gsutil_cloud_sun.txt
+
+# Create bash script to loop over each gsutil url to replace comma with space
+
+# script_replace_comma_with_space_gcloud.sh
+
+```
