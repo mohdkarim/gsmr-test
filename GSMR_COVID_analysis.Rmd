@@ -27,7 +27,7 @@ https://cnsgenomics.com/software/gcta/#GSMR
 # rs10000013  A   C   0.775931455 -0.0095 0.0044  0.03084 233886
 ```
 
-## Reference panel: UK10K
+## Reference panel: UK10K (terminal/bash)
 
 ```{r}
 # Copy UK10K from farm to my google VM
@@ -49,7 +49,13 @@ https://cnsgenomics.com/software/gcta/#GSMR
 ```{r}
 library(bigrquery)
 
+bq_auth() # authorize bigrquery to access my google cloud account
+
 project <- "open-targets-genetics" # replace this with your project ID 
+
+# Manually import Sun cis-pQTLs from OTG google cloud storage to BigQuery
+
+# genetics-portal-sumstats-b38/unfiltered/molecular_trait/SUN2018.parquet/bio_feature=UBERON_0001969
 
 # Create vector of Sun proteins from gcloud
 
@@ -75,6 +81,8 @@ sapply(seq_along(prots$phenotype_id), function (x) {
   project <- "open-targets-genetics"
   
   #qry <- paste0("SELECT CONCAT(g.chr, ':', pos, ':', ref, ':', alt) AS SNP, alt AS A1, ref AS A2, eaf AS freq, beta AS b, se, pval AS p, n_total AS N FROM `mohd_hypothesis.sun2018` m INNER JOIN `190505.genes` g ON m.gene_id = g.gene_id WHERE phenotype_id = ", "'", prot, "'")
+  
+  # The following query is constructed to 1) obtain variant ID for each SNP, the chromosome no. needs to be extracted separately by merging with another file that contains chromosome number and this is merged using the ensembl IDs, 2) remove rows with duplicate SNP IDs, 3) GSMR-formatting
   
   qry <- paste0("WITH 
   BIG_QUERY AS (
@@ -131,10 +139,186 @@ WHERE
 
 # Run this in command line to create a text file of all Sun cis-proteins
 
-#gsutil ls gs://genetics-portal-analysis/mohd/sun2018-formated-gsmr-2 | grep -e "_gsmr$" > gsutil_cloud_sun.txt
+# gsutil ls gs://genetics-portal-analysis/mohd/sun2018-formated-gsmr-3-dedup | grep -e "_gsmr$" > gsutil_cloud_sun.txt
 
-# Create bash script to loop over each gsutil url to replace comma with space
+# Create bash script to loop over each gsutil url to replace comma with single space
 
-# script_replace_comma_with_space_gcloud.sh
+#!/bin/bash
+
+# For protein
+
+# for url in $(cat gsutil_cloud_sun.txt); do
+#     wd=$(pwd)
+#     prot=$(sed 's:.*/::' <<< "$url")
+#     gsutil cp $url $wd
+#     sed -i -e 's/,/ /g' $wd/${prot}
+#     gsutil cp $wd/${prot} gs://genetics-portal-analysis/mohd/sun2018-formated-gsmr-3-dedup
+#     unlink $wd/${prot}
+#     unlink $wd/${prot}-e
+# done
+
+# save as script_replace_comma_with_space_gcloud.sh
+
+# bash script_replace_comma_with_space_gcloud.sh
+```
+
+## Outcome: COVID-19 (5 GWAS datasets released on Sep 2020, release 4 alpha)
+
+```{r}
+# Compile list of links to dataset:
+
+covidurls <- data.table::fread("/Users/mk31/COVID_Sep2020_links", stringsAsFactors = F, header = F)
+
+covidurls2 <- covidurls[-grep("b37|tbi|gz_", covidurls$V1),] # list of links with b38 data
+
+covidurls3 <- covidurls2[-grep("_D1_", covidurls2$V1),] # removink D1 - predicted covid from self-reported symptoms vs. predicted or self-reported non-covid, it did not contain UKB AFs for all SNPs
+
+write.table(covidurls3, "/Users/mk31/covid_links_sep2020.txt", row.names = F, col.names = F, quote = F)
+
+# download all the COVID datasets to my VM
+
+system('/Users/mk31/google-cloud-sdk/bin/gcloud compute scp "/Users/mk31/covid_links_sep2020.txt" "mohd-analysis-gsmr3-uk10k": --zone=europe-west1-d')
+
+# gcloud compute --project "open-targets-genetics" ssh --zone "europe-west1-d" "mohd-analysis-gsmr3-uk10k"
+
+# mkdir covid_sep2020
+
+# mv covid_links_sep2020.txt covid_sep2020
+
+# cd covid_sep2020
+
+# wget -i covid_links_sep2020.txt
+
+# gunzip *.gz
+
+# script to add N to each gwas file (N = 1345334)
+
+# N_A2 = 2972 + 284472 # very severe respiratory confirmed covid vs. population
+# N_B1 = 1389 + 5879 # hospitalized covid vs. not hospitalized covid
+# N_B2 = 6492 + 1012809 # hospitalized covid vs. population
+# N_C1 = 11181 + 116456 # covid vs. lab/self-reported negative
+# N_C2 = 17607 + 1345334 # covid vs. population
+
+# cat COVID19_HGI_A2_ALL_20200930.txt | awk 'BEGIN{OFS="\t"}NR==1{$(NF+1)="N"} NR>1{$(NF+1)="287444"}1' > COVID19_HGI_A2_ALL_20200930_N.txt
+
+# cat COVID19_HGI_B1_ALL_20200930.txt | awk 'BEGIN{OFS="\t"}NR==1{$(NF+1)="N"} NR>1{$(NF+1)="7268"}1' > COVID19_HGI_B1_ALL_20200930.txt_N.txt
+
+# cat COVID19_HGI_B2_ALL_20200930.txt | awk 'BEGIN{OFS="\t"}NR==1{$(NF+1)="N"} NR>1{$(NF+1)="1019301"}1' > COVID19_HGI_B2_ALL_20200930.txt_N.txt
+
+# cat COVID19_HGI_C1_ALL_20200930.txt | awk 'BEGIN{OFS="\t"}NR==1{$(NF+1)="N"} NR>1{$(NF+1)="127637"}1' > COVID19_HGI_C1_ALL_20200930.txt_N.txt
+
+# cat COVID19_HGI_C2_ALL_20200930.txt | awk 'BEGIN{OFS="\t"}NR==1{$(NF+1)="N"} NR>1{$(NF+1)="1362941"}1' > COVID19_HGI_C2_ALL_20200930.txt_N.txt
+
+# upload to my google bucket for further processing using BQ
+
+# gsutil -m cp *_N.txt gs://genetics-portal-analysis/mohd/covid2-sep2020 # IF ResumableUploadAbortException: 403 Insufficient Permission, 
+# 0. Stop VM instance
+# 1. Open VM instance details
+# 2. Press "Edit"
+# 3. Change Cloud API access scope--> "Allow full access to all cloud APIs"
+# 4. rm -r ~/.gsutil
+
+# CREATE TABLES WITH BIGQUERY (first load them to BigQuery from Google Cloud)
+
+# DOING THIS MANUALLY FOR NOW USING CONSOLE, BECAUSE THESE ARE TXT FILES WHERE WE NEED TP SPECIFY TAB AS A DELIMITER, COULD NOT FIND THAT OPTION IN BIGRQUERY
+
+library(bigrquery)
+
+bq_auth() # authorize bigrquery to access my google cloud account
+
+studies <- c("COVID19_HGI_A2_ALL_20200930_N", "COVID19_HGI_B1_ALL_20200930_N", "COVID19_HGI_B2_ALL_20200930_N", "COVID19_HGI_C1_ALL_20200930_N", "COVID19_HGI_C2_ALL_20200930_N")
+
+# FORMAT OUTCOME TABLES FOR GSMR AND SAVE IN MY GOOGLE BUCKET
+
+sapply(seq_along(studies), function (x) {
+  
+  # build query
+  
+  require(bigrquery)
+  
+  project <- "open-targets-genetics"
+  
+  study <- studies[x]
+  
+  print(study)
+  
+  # THIS QUERY WILL REMOVE ROWS WITH DUPLICATE SNP IDs
+  
+  qry <- paste0("WITH 
+  BIG_QUERY AS (
+WITH
+  BIG_SUB_QUERY AS (
+  SELECT
+    SNP,
+    ALT AS A1,
+    REF AS A2,
+    all_meta_AF AS freq,
+    all_inv_var_meta_beta AS b,
+    all_inv_var_meta_sebeta AS se,
+    all_inv_var_meta_p AS p
+  FROM
+    `mohd_hypothesis.", study, "`", ")",
+"SELECT
+  *
+FROM (
+  SELECT
+    *,
+    ROW_NUMBER() OVER (PARTITION BY SNP) row_number
+  FROM
+    BIG_SUB_QUERY)
+WHERE
+  row_number = 1)
+  SELECT
+    SNP,
+    A1,
+    A2,
+    freq,
+    b,
+    se,
+    p
+   FROM
+    BIG_QUERY
+")
+
+  # run bigquery
+  
+  tb <- bq_project_query(project, qry)
+  
+  # save in my gcloud bucket
+  
+  bq_perform_extract(tb, paste0("gs://genetics-portal-analysis/mohd/covid2-sep2020-gsmr-formatted/", study, "*.csv"), destination_format = "CSV", print_header = FALSE)
+  
+  print(paste0(study, " GSMR formatted and uploaded to GC bucket"))
+  
+})
+
+# Run compose_outcome_gwas_to_single_csv_file.sh
+
+listofoutcomes <- paste0(studies, "*.csv")
+
+write.table(listofoutcomes, "/Users/mk31/listofoutcomecovid_tocompose.txt", row.names = FALSE, quote = FALSE, col.names = FALSE)
+
+system('/Users/mk31/google-cloud-sdk/bin/gcloud compute scp "/Users/mk31/listofoutcomecovid_tocompose.txt" "mohd-analysis-gsmr3-uk10k": --zone=europe-west1-d')
+
+# Run compose_outcome_covid_to_single_csv_file.sh to compose
+
+#!/bin/bash
+
+# for url in $(cat listofoutcomecovid_tocompose.txt); do
+#     wd=$(pwd)
+#     prot=$(sed 's/\*//g' <<< "$url")
+#     gsutil compose gs://genetics-portal-analysis/mohd/covid2-sep2020-gsmr-formatted/${url} gs://genetics-portal-analysis/mohd/covid2-sep2020-gsmr-formatted/${prot}
+# done
+
+system('/Users/mk31/google-cloud-sdk/bin/gcloud compute scp ~/gsmr-test/compose_outcome_covid_to_single_csv_file.sh "mohd-analysis-gsmr3-uk10k": --zone=europe-west1-d')
+
+# run bash script on vm
+
+# vm <- gce_vm("mohd-analysis-gsmr")
+# 
+# gce_ssh(vm, "bash compose_outcome_gwas_to_single_csv_file.sh")
+
+# to replace comma with single, mount google cloud storage and run sed
 
 ```
+
