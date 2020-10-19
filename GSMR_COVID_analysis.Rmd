@@ -5,13 +5,20 @@ date: "13/10/2020"
 output: html_document
 ---
 
-# GSMR for COVID HGI (Using UK10K)
+# cis-GSMR for COVID HGI v1 (Using UK10K)
 
 GSMR (Generalised Summary data-based Mendelian randomisation) requires three types of data to run:
 
 1. Exposure data
 2. Outcome data
 3. Reference panel data
+
+This v1 will use the following GSMR parameters to select genetic instruments
+
+1. p < 1 x 10-5
+2. r2 < 0.05
+3. Minimum number of cis-pQTLs = 5
+3. P-HEIDI flag = on
 
 These three data types need to be in a standard COJO format:
 
@@ -255,7 +262,8 @@ WITH
     all_meta_AF AS freq,
     all_inv_var_meta_beta AS b,
     all_inv_var_meta_sebeta AS se,
-    all_inv_var_meta_p AS p
+    all_inv_var_meta_p AS p,
+    N as N
   FROM
     `mohd_hypothesis.", study, "`", ")",
 "SELECT
@@ -275,7 +283,8 @@ WHERE
     freq,
     b,
     se,
-    p
+    p,
+    N
    FROM
     BIG_QUERY
 ")
@@ -316,9 +325,1079 @@ system('/Users/mk31/google-cloud-sdk/bin/gcloud compute scp ~/gsmr-test/compose_
 
 # vm <- gce_vm("mohd-analysis-gsmr")
 # 
-# gce_ssh(vm, "bash compose_outcome_gwas_to_single_csv_file.sh")
+# gce_ssh(vm, "bash compose_outcome_covid_to_single_csv_file.sh")
 
-# to replace comma with single, mount google cloud storage and run sed
+# to replace comma with single, mount google cloud storage and run sed or use the script
+
+listofoutcomes2 <- gsub("\\*", "", listofoutcomes)
+
+listofoutcomes3 <- paste0("gs://genetics-portal-analysis/mohd/covid2-sep2020-gsmr-formatted/", listofoutcomes2)
+
+write.table(listofoutcomes3, "/Users/mk31/listofoutcomes_to_replace_comma_with_space.txt", row.names = FALSE, quote = FALSE, col.names = FALSE)
+
+system('/Users/mk31/google-cloud-sdk/bin/gcloud compute scp "/Users/mk31/listofoutcomes_to_replace_comma_with_space.txt" "mohd-analysis-gsmr3-uk10k": --zone=europe-west1-d')
+
+#!/bin/bash
+
+# for url in $(cat listofoutcomes_to_replace_comma_with_space.txt); do
+#      wd=$(pwd)
+#      prot=$(sed 's:.*/::' <<< "$url")
+#      gsutil cp $url $wd
+#      sed -i -e 's/,/ /g' $wd/${prot}
+#      gsutil cp $wd/${prot} gs://genetics-portal-analysis/mohd/covid2-sep2020-gsmr-formatted/
+#      unlink $wd/${prot}
+#      unlink $wd/${prot}-e
+# done
+
+system('/Users/mk31/google-cloud-sdk/bin/gcloud compute scp ~/gsmr-test/script_replace_comma_with_space_gcloud.sh "mohd-analysis-gsmr3-uk10k": --zone=europe-west1-d')
 
 ```
+
+## Create path files for GSMR and GSMR script
+
+```{r}
+## COVID
+
+# mkdir covid2-sep2020-gsmr-formatted
+
+# mv listofoutcomes_to_replace_comma_with_space.txt covid_sep2020/covid2-sep2020-gsmr-formatted/
+
+# cat listofoutcomes_to_replace_comma_with_space.txt | gsutil -m cp -I covid_sep2020/covid2-sep2020-gsmr-formatted/
+
+# ls -d "$PWD"/covid_sep2020/covid2-sep2020-gsmr-formatted/*.csv > covid_gsmr1.txt
+# ls -d "$PWD"/covid_sep2020/covid2-sep2020-gsmr-formatted/*.csv | sed 's:.*/::' | sed 's/.csv//' > covid_gsmr2.txt
+# paste covid_gsmr2.txt covid_gsmr1.txt > covid_gsmr.txt
+
+## Sun 
+
+# ls -d $PWD/sun_gsmr/* | sed 's:.*/::' > prot1.txt
+# 
+# ls -d $PWD/sun_gsmr/* > prot2.txt
+# 
+# paste prot1.txt prot2.txt > prot.txt
+
+# Reference
+
+#ls -d $PWD/ukb_v3_downsampled10k_plink/* | grep -v '\.crc$' | sed 's/.bed//' | sed 's/.bim//' | sed 's/.fam//' | uniq > ukb_v3_downsampled10k_plink.txt
+
+```
+
+## Run GSMR script
+
+```{r}
+
+# Run GSMR script
+
+#!/bin/bash
+
+# DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
+# 
+# $DIR/gcta_1.93.2beta/gcta64 \
+# --mbfile $DIR/ukb_v3_downsampled10k_plink.txt \
+# --gsmr-file $DIR/prot.txt $DIR/covid_gsmr.txt \
+# --gsmr-direction 0 --clump-r2 0.05 --gwas-thresh 1e-5 --gsmr-snp-min 5 --effect-plot --out sun_outcomes_covid2_sep2020_gsmr_results
+
+system('/Users/mk31/google-cloud-sdk/bin/gcloud compute scp ~/gsmr-test/gsmr_sun_covid2_sep2020.sh "mohd-analysis-gsmr3-uk10k": --zone=europe-west1-d')
+```
+
+## Extract cis-GSMR results (use FDR as threshold for significance)
+
+```{r}
+# per protein
+
+system('/Users/mk31/google-cloud-sdk/bin/gcloud compute scp "mohd-analysis-gsmr3-uk10k:~/sun_outcomes_covid2_sep2020_gsmr_results.gsmr" "/Users/mk31/" --zone=europe-west1-d')
+
+covidmr <- data.table::fread("/Users/mk31/sun_outcomes_covid2_sep2020_gsmr_results.gsmr", stringsAsFactors = F)
+
+covidmr[covidmr=="NaN"] <- NA_character_
+
+covidmr2 <- na.omit(covidmr)
+
+covidmr2$p <- as.numeric(covidmr2$p)
+
+# per SNP
+
+system('/Users/mk31/google-cloud-sdk/bin/gcloud compute scp "mohd-analysis-gsmr3-uk10k":~/sun_outcomes_covid2_sep2020_gsmr_results.eff_plot.gz ~/ --zone=europe-west1-d')
+
+source("/Users/mk31/gsmr_plot.r")
+
+covid_snp <- read_gsmr_data("/Users/mk31/sun_outcomes_covid2_sep2020_gsmr_results.eff_plot.gz")
+
+saveRDS(covid_snp, "/Users/mk31/sun_outcomes_covid2_sep2020_gsmr_results_snp.rds")
+
+# retrieve snp estimates
+  
+genes <- covidmr2$Exposure
+
+out <- covidmr2$Outcome
+  
+dfcovid <- lapply(seq_along(genes), function (y) {
+    
+    print(genes[y])
+    
+    source("/Users/mk31/gsmr_plot.r")
+    
+    df2 <- try(gsmr_snp_effect(gsmr_data = covid_snp, expo_str = genes[y], outcome_str = out[y]))
+    
+    if(is(df2, 'try-error')) {
+      
+      print(paste0(genes[y], " not tabulated"))
+      
+    } else {
+    
+    if(length(df2$bxy)==1) {
+      
+      df2 <- data.frame(df2, stringsAsFactors = F)
+      
+      df2$gene <- genes[y]
+      
+      df2$outcome <- out[y]
+      
+      df2
+      
+    } else {
+      
+      df2$bxy <- df2$bxy[[1]]
+      
+      df2 <- data.frame(df2, stringsAsFactors = F)
+      
+      df2$gene <- genes[y]
+      
+      df2$outcome <- out[y]
+      
+      df2
+      
+    }
+      
+      
+    }
+    })
+
+df2 <- data.table::rbindlist(dfcovid)
+
+# Separating per protein MR estimates by outcome
+
+out_unique <- unique(out)
+
+COVID19_HGI_A2_ALL_20200930_N <- covidmr2[covidmr2$Outcome=="COVID19_HGI_A2_ALL_20200930_N",]
+COVID19_HGI_B1_ALL_20200930_N <- covidmr2[covidmr2$Outcome=="COVID19_HGI_B1_ALL_20200930_N",]
+COVID19_HGI_B2_ALL_20200930_N <- covidmr2[covidmr2$Outcome=="COVID19_HGI_B2_ALL_20200930_N",]
+COVID19_HGI_C1_ALL_20200930_N <- covidmr2[covidmr2$Outcome=="COVID19_HGI_C1_ALL_20200930_N",]
+COVID19_HGI_C2_ALL_20200930_N <- covidmr2[covidmr2$Outcome=="COVID19_HGI_C2_ALL_20200930_N",]
+
+# Applying FDR to each
+
+COVID19_HGI_A2_ALL_20200930_N$p_fdr <- p.adjust(COVID19_HGI_A2_ALL_20200930_N$p, method = "BH")
+
+COVID19_HGI_B1_ALL_20200930_N$p_fdr <- p.adjust(COVID19_HGI_B1_ALL_20200930_N$p, method = "BH")
+
+COVID19_HGI_B2_ALL_20200930_N$p_fdr <- p.adjust(COVID19_HGI_B2_ALL_20200930_N$p, method = "BH")
+
+COVID19_HGI_C1_ALL_20200930_N$p_fdr <- p.adjust(COVID19_HGI_C1_ALL_20200930_N$p, method = "BH")
+
+COVID19_HGI_C2_ALL_20200930_N$p_fdr <- p.adjust(COVID19_HGI_C2_ALL_20200930_N$p, method = "BH")
+
+
+```
+
+## Forest plots
+
+```{r}
+
+```
+
+## Colocalisation - ABO
+
+### extract SNPs +-1 Mbp of proteins and COVID (only done for proteins with significant MR results)
+
+```{r}
+covidmr <- data.table::fread("/Users/mk31/sun_outcomes_covid2_sep2020_gsmr_results.gsmr", stringsAsFactors = F)
+
+covidmr[covidmr=="NaN"] <- NA_character_
+
+covidmr2 <- na.omit(covidmr)
+
+covidmr2$p <- as.numeric(covidmr2$p)
+
+# ABO:C2====
+
+system('/Users/mk31/google-cloud-sdk/bin/gcloud compute scp "mohd-analysis-gsmr3-uk10k:~/sun_gsmr/ABO_9253_52_3_gsmr" "/Users/mk31/" --zone=europe-west1-d')
+
+ABO <- data.table::fread("/Users/mk31/ABO_9253_52_3_gsmr", stringsAsFactors = F)
+
+names(ABO) <- c("Variant", "ea.x", "oa.x", "freq.x", "beta.x", "se.x", "pval.x", "n.x")
+
+system('/Users/mk31/google-cloud-sdk/bin/gcloud compute scp "mohd-analysis-gsmr3-uk10k:~/covid_sep2020/covid2-sep2020-gsmr-formatted/COVID19_HGI_C2_ALL_20200930_N.csv" "/Users/mk31/" --zone=europe-west1-d')
+
+C2 <- data.table::fread("/Users/mk31/COVID19_HGI_C2_ALL_20200930_N.csv", stringsAsFactors = F)
+
+names(C2) <- c("Variant", "ea.y", "oa.y", "freq.y", "beta.y", "se.y", "pval.y", "n.y")
+
+ABO_C2 <- merge(ABO, C2, by = "Variant")
+
+# ABO:B2====
+
+system('/Users/mk31/google-cloud-sdk/bin/gcloud compute scp "mohd-analysis-gsmr3-uk10k:~/covid_sep2020/covid2-sep2020-gsmr-formatted/COVID19_HGI_B2_ALL_20200930_N.csv" "/Users/mk31/" --zone=europe-west1-d')
+
+B2 <- data.table::fread("/Users/mk31/COVID19_HGI_B2_ALL_20200930_N.csv", stringsAsFactors = F)
+
+names(B2) <- c("Variant", "ea.y", "oa.y", "freq.y", "beta.y", "se.y", "pval.y", "n.y")
+
+ABO_B2 <- merge(ABO, B2, by = "Variant")
+
+
+# ABO:C1====
+
+system('/Users/mk31/google-cloud-sdk/bin/gcloud compute scp "mohd-analysis-gsmr3-uk10k:~/covid_sep2020/covid2-sep2020-gsmr-formatted/COVID19_HGI_C1_ALL_20200930_N.csv" "/Users/mk31/" --zone=europe-west1-d')
+
+C1 <- data.table::fread("/Users/mk31/COVID19_HGI_C1_ALL_20200930_N.csv", stringsAsFactors = F)
+
+names(C1) <- c("Variant", "ea.y", "oa.y", "freq.y", "beta.y", "se.y", "pval.y", "n.y")
+
+ABO_C1 <- merge(ABO, C1, by = "Variant")
+```
+
+### coloc analysis
+
+```{r}
+# ABO:C2====
+
+# Load required packaged
+  
+library(httr)
+library(jsonlite)
+library(svMisc)
+  
+  # Create subfunction GQL specific for OTG portal
+  
+GQL <- function(query, 
+                ..., 
+                .token = NULL,
+                .variables = NULL, 
+                .operationName = NULL, 
+                .url = "https://genetics-api.opentargets.io/graphql"){
+    pbody <- list(query = query, variables = .variables, operationName = .operationName)
+    if(is.null(.token)){
+        res <- POST(.url, body = pbody, encode="json", ...)
+    } else {
+        auth_header <- paste("bearer", .token)
+        res <- POST(.url, body = pbody, encode="json", add_headers(Authorization=auth_header), ...)
+    }
+    res <- content(res, as = "parsed", encoding = "UTF-8")
+    if(!is.null(res$errors)){
+        warning(toJSON(res$errors))
+    }
+    res$data
+}
+
+eaf <- function(x) {
+  
+  # Build query
+  
+  id <- x
+  print(id)
+  id <- gsub(":", "_", id)
+  str <- paste0('{variantInfo(variantId: ', "\"",  id, "\"", ') {
+        nearestGene {
+            id
+            symbol
+          }
+        nearestCodingGene {
+            id
+            symbol
+          }
+        gnomadNFE
+        refAllele
+        altAllele
+    }
+}')
+  
+  # Apply GQL function on query
+  
+  df <- GQL(str)
+  
+  # Extract EAF (this assumes the ALT allele is the effect allele, so relies on harmonised data)
+  
+  # print(df$variantInfo$gnomadNFE)
+  
+  df$variantInfo$gnomadNFE
+  
+}
+
+ABO_C2$aaf <- sapply(ABO_C2$Variant, eaf)
+
+eaf_to_maf = function(eaf) {
+  min(eaf, 1-eaf)
+}
+
+ABO_C2$maf <- sapply(ABO_C2$aaf, eaf_to_maf)
+
+# Make coloc dataset (left: pqtl)
+
+left_n = ABO_C2$n.x[1]
+left_type = 'quant'
+left_data = list(
+                 pvalues=ABO_C2$pval.x,
+                 N=left_n,
+                 beta = ABO_C2$beta.x,
+                 varbeta = (ABO_C2$se.x)^2,
+                 MAF=ABO_C2$maf,
+                 type=left_type,
+                 snp = ABO_C2$Variant
+               )
+  
+  # Make coloc dataset (right: covid)
+
+right_n = ABO_C2$n.y[1]
+right_ncases = 17607
+right_prop = right_ncases / right_n
+right_type = 'cc'
+right_data = list(
+                 pvalues=ABO_C2$pval.y,
+                 N=right_n,
+                 beta = ABO_C2$beta.y,
+                 varbeta = (ABO_C2$se.y)^2,
+                 MAF=ABO_C2$maf,
+                 type=right_type,
+                 s=right_prop,
+                 snp = ABO_C2$Variant
+               )
+  
+  # Run coloc
+
+library(coloc)
+
+coloc_res <- coloc.abf(left_data, right_data,
+                     MAF=ABO_C2$maf,
+                     p1=1e-04, p2=1e-04, p12 = 1e-05)
+
+  # Output coloc result
+  
+r <- coloc_res$results
+
+s <- data.frame(coloc_res$summary)
+s2 <- data.frame(t(s), stringsAsFactors = F)
+
+row.names(s2) <- NULL
+
+r_s2 <- data.frame(coloc_snp = r$snp[which.max(r$SNP.PP.H4)], s2[,2:6], stringsAsFactors = F)
+
+ABO_C2_coloc <- cbind(ABO_C2, r_s2)
+
+# ABO:B2====
+
+ABO_B2$aaf <- sapply(ABO_B2$Variant, eaf)
+
+#ABO_B2$aaf <- as.numeric(ABO_B2$aaf)
+
+eaf_to_maf = function(eaf) {
+  min(eaf, 1-eaf)
+}
+
+ABO_B2$maf <- sapply(ABO_B2$aaf, eaf_to_maf)
+
+# Make coloc dataset (left: pqtl)
+
+left_n = ABO_B2$n.x[1]
+left_type = 'quant'
+left_data = list(
+                 pvalues=ABO_B2$pval.x,
+                 N=left_n,
+                 beta = ABO_B2$beta.x,
+                 varbeta = (ABO_B2$se.x)^2,
+                 MAF=ABO_B2$maf,
+                 type=left_type,
+                 snp = ABO_B2$Variant
+               )
+  
+  # Make coloc dataset (right: covid)
+
+right_n = ABO_B2$n.y[1]
+right_ncases = 6492
+right_prop = right_ncases / right_n
+right_type = 'cc'
+right_data = list(
+                 pvalues=ABO_B2$pval.y,
+                 N=right_n,
+                 beta = ABO_B2$beta.y,
+                 varbeta = (ABO_B2$se.y)^2,
+                 MAF=ABO_B2$maf,
+                 type=right_type,
+                 s=right_prop,
+                 snp = ABO_B2$Variant
+               )
+  
+  # Run coloc
+
+library(coloc)
+
+coloc_res <- coloc.abf(left_data, right_data,
+                     MAF=ABO_B2$maf,
+                     p1=1e-04, p2=1e-04, p12 = 1e-05)
+
+  # Output coloc result
+  
+r <- coloc_res$results
+
+s <- data.frame(coloc_res$summary)
+s2 <- data.frame(t(s), stringsAsFactors = F)
+
+row.names(s2) <- NULL
+
+r_s2 <- data.frame(coloc_snp = r$snp[which.max(r$SNP.PP.H4)], s2[,2:6], stringsAsFactors = F)
+
+ABO_B2_coloc <- cbind(ABO_B2, r_s2)
+
+# ABO:C1====
+
+ABO_C1$aaf <- sapply(ABO_C1$Variant, eaf)
+
+#ABO_C1$aaf <- as.numeric(ABO_C1$aaf)
+
+eaf_to_maf = function(eaf) {
+  min(eaf, 1-eaf)
+}
+
+ABO_C1$maf <- sapply(ABO_C1$aaf, eaf_to_maf)
+
+# Make coloc dataset (left: pqtl)
+
+left_n = ABO_C1$n.x[1]
+left_type = 'quant'
+left_data = list(
+                 pvalues=ABO_C1$pval.x,
+                 N=left_n,
+                 beta = ABO_C1$beta.x,
+                 varbeta = (ABO_C1$se.x)^2,
+                 MAF=ABO_C1$maf,
+                 type=left_type,
+                 snp = ABO_C1$Variant
+               )
+  
+  # Make coloc dataset (right: covid)
+
+right_n = ABO_C1$n.y[1]
+right_ncases = 11181
+right_prop = right_ncases / right_n
+right_type = 'cc'
+right_data = list(
+                 pvalues=ABO_C1$pval.y,
+                 N=right_n,
+                 beta = ABO_C1$beta.y,
+                 varbeta = (ABO_C1$se.y)^2,
+                 MAF=ABO_C1$maf,
+                 type=right_type,
+                 s=right_prop,
+                 snp = ABO_C1$Variant
+               )
+  
+  # Run coloc
+
+library(coloc)
+
+coloc_res <- coloc.abf(left_data, right_data,
+                     MAF=ABO_C1$maf,
+                     p1=1e-04, p2=1e-04, p12 = 1e-05)
+
+  # Output coloc result
+  
+r <- coloc_res$results
+
+s <- data.frame(coloc_res$summary)
+s2 <- data.frame(t(s), stringsAsFactors = F)
+
+row.names(s2) <- NULL
+
+r_s2 <- data.frame(coloc_snp = r$snp[which.max(r$SNP.PP.H4)], s2[,2:6], stringsAsFactors = F)
+
+ABO_C1_coloc <- cbind(ABO_C1, r_s2)
+
+
+```
+
+### coloc plots
+
+```{r}
+# ABO:C2====
+
+## create function to retrieve SNP rsids from OTG
+    
+get_rsid <- function (x) {
+
+  # Build query
+
+  id <- x # variant ID
+  
+  id <- gsub(":", "_", id)
+  
+  print(id)
+
+  str <- paste0('{variantInfo(variantId:', "\"",  id, "\"", ') {
+  
+  rsId
+  
+}
+}')
+
+  # Apply GQL function on query
+
+  #print("extracting rsid from OTG portal...")
+
+  df <- GQL(str)[[1]]
+
+  #eaf <- df$gnomadNFE
+
+}
+    
+ABO_C2_coloc$rsid <- sapply(seq_along(ABO_C2_coloc$Variant), function (z) get_rsid(ABO_C2_coloc$Variant[z])[[1]])
+
+## exposure and outcome rsid and p-values for locuscompareR
+    
+library(dplyr)
+
+covidgwas <- ABO_C2_coloc %>% select(rsid, pval.y)
+pqtl <- ABO_C2_coloc %>% select(rsid, pval.x)
+
+names(covidgwas) <- c("rsid", "pval")
+names(pqtl) <- c("rsid", "pval")
+
+library(locuscomparer)
+
+locuscompare(in_fn1 = covidgwas, in_fn2 = pqtl, title1 = "C2", title2 = "ABO cis-pQTLs", genome = "hg38")
+
+ggplot2::ggsave("ABO_C2.png", height = 10, width = 10, path = "/Users/mk31/")
+
+# ABO:B2====
+
+get_rsid <- function (x) {
+
+  # Build query
+
+  id <- x # variant ID
+  
+  id <- gsub(":", "_", id)
+  
+  print(id)
+
+  str <- paste0('{variantInfo(variantId:', "\"",  id, "\"", ') {
+  
+  rsId
+  
+}
+}')
+
+  # Apply GQL function on query
+
+  #print("extracting rsid from OTG portal...")
+
+  df <- GQL(str)[[1]]
+
+  #eaf <- df$gnomadNFE
+
+}
+    
+ABO_B2_coloc$rsid <- sapply(seq_along(ABO_B2_coloc$Variant), function (z) get_rsid(ABO_B2_coloc$Variant[z])[[1]])
+
+## exposure and outcome rsid and p-values for locuscompareR
+    
+library(dplyr)
+
+covidgwas <- ABO_B2_coloc %>% select(rsid, pval.y)
+pqtl <- ABO_B2_coloc %>% select(rsid, pval.x)
+
+names(covidgwas) <- c("rsid", "pval")
+names(pqtl) <- c("rsid", "pval")
+
+library(locuscomparer)
+
+locuscompare(in_fn1 = covidgwas, in_fn2 = pqtl, title1 = "B2", title2 = "ABO cis-pQTLs", genome = "hg38")
+
+ggplot2::ggsave("ABO_B2.png", height = 10, width = 10, path = "/Users/mk31/")
+
+# ABO:C1====
+
+get_rsid <- function (x) {
+
+  # Build query
+
+  id <- x # variant ID
+  
+  id <- gsub(":", "_", id)
+  
+  print(id)
+
+  str <- paste0('{variantInfo(variantId:', "\"",  id, "\"", ') {
+  
+  rsId
+  
+}
+}')
+
+  # Apply GQL function on query
+
+  #print("extracting rsid from OTG portal...")
+
+  df <- GQL(str)[[1]]
+
+  #eaf <- df$gnomadNFE
+
+}
+    
+ABO_C1_coloc$rsid <- sapply(seq_along(ABO_C1_coloc$Variant), function (z) get_rsid(ABO_C1_coloc$Variant[z])[[1]])
+
+## exposure and outcome rsid and p-values for locuscompareR
+    
+library(dplyr)
+
+covidgwas <- ABO_C1_coloc %>% select(rsid, pval.y)
+pqtl <- ABO_C1_coloc %>% select(rsid, pval.x)
+
+names(covidgwas) <- c("rsid", "pval")
+names(pqtl) <- c("rsid", "pval")
+
+library(locuscomparer)
+
+locuscompare(in_fn1 = covidgwas, in_fn2 = pqtl, title1 = "C1", title2 = "ABO cis-pQTLs", genome = "hg38")
+
+ggplot2::ggsave("ABO_C1.png", height = 10, width = 10, path = "/Users/mk31/")
+
+```
+
+
+## Colocalisation - OAS1 (to compare with Brent Richards paper)
+
+```{r}
+
+```
+
+# OAS/IFN instruments
+
+## Format full Sun pQTL sumstats for pan-GSMR
+
+```{r}
+
+```
+
+
+## Pan-OAS1/IL10RB/IFN instruments
+
+```{r}
+# GWAS of OAS1/IL10RB/IFN
+
+library(dplyr)
+
+IL7 <- data.table::fread("/Users/mk31/Downloads/IL7.14049.17.3/IL7_p.tsv", stringsAsFactors = FALSE)
+
+cols <- IL7 %>% select(VARIANT_ID, chromosome, position, `1`)
+
+rm(IL7)
+
+names(cols) <- c("SNP", "CHR", "BP", "P")
+
+cols2 <- cols %>% filter(P < 0.05)
+
+# library(qqman)
+# 
+# str <- "IL7_Sun.png"
+# 
+# png(file = paste0("/Users/mk31/GSMR_example/", str), width = 1500, height = 1500, res = 200)
+#   
+# manhattan(cols2)
+#   
+# while (!is.null(dev.list()))  dev.off()
+
+# crp3_short <- crp3 %>% dplyr::select(rsid, chr, pos, pval)
+# 
+library(CMplot)
+
+CMplot(cols2, 
+       plot.type="m",
+       LOG10=TRUE,
+       threshold=c(5e-08, 1e-11), 
+       #threshold.col = "red", 
+       threshold.lty = c(1, 2), 
+       threshold.lwd = c(2, 2), 
+       signal.col = NULL, 
+       file="jpg",memo="",
+       dpi=300, 
+       file.output=TRUE,
+       verbose=TRUE,
+       width=16,
+       height=10)
+
+
+# Pan-GSMR of OAS1/IL10RB/IFN on COVID risk (bi-directional)
+
+# Cis-GSMR of OAS1/IL10RB/IFN on COVID risk (cis-instruments curated manually and MR done with MR-IVW)
+
+# Combined forest plots
+
+# Coloc of OAS1/IL10RB/IFN and COVID risk
+```
+
+
+# cis-GSMR for COVID HGI v2 (Using UK10K) [GSMR still runs with min 1 snp, but I'm not able to extract SNPs for proteins with < 5 genetic instruments for whatever reason + its still not picking up genetic instruments for OAS1, where there's independent instrument for it]
+
+This v2 will use the following GSMR parameters to select genetic instruments
+
+1. p < 1 x 10-5
+2. r2 < 0.05
+3. Minimum number of cis-pQTLs = 1
+3. P-HEIDI flag = on (or off?)
+
+## Run GSMR script
+
+```{r}
+# Run GSMR script
+
+#!/bin/bash
+
+# DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
+# 
+# $DIR/gcta_1.93.2beta/gcta64 \
+# --mbfile $DIR/ukb_v3_downsampled10k_plink.txt \
+# --gsmr-file $DIR/prot.txt $DIR/covid_gsmr.txt \
+# --gsmr-direction 0 --clump-r2 0.05 --gwas-thresh 1e-5 --gsmr-snp-min 1 --effect-plot --out sun_outcomes_covid2_sep2020_gsmr_results_1snp
+
+system('/Users/mk31/google-cloud-sdk/bin/gcloud compute scp ~/gsmr-test/gsmr_sun_covid2_sep2020_1snp.sh "mohd-analysis-gsmr3-uk10k": --zone=europe-west1-d')
+```
+
+## Extract cis-GSMR results (use FDR as threshold for significance)
+
+```{r}
+# per protein
+
+system('/Users/mk31/google-cloud-sdk/bin/gcloud compute scp "mohd-analysis-gsmr3-uk10k:~/sun_outcomes_covid2_sep2020_gsmr_results_1snp.gsmr" "/Users/mk31/" --zone=europe-west1-d')
+
+covidmr <- data.table::fread("/Users/mk31/sun_outcomes_covid2_sep2020_gsmr_results_1snp.gsmr", stringsAsFactors = F)
+
+covidmr[covidmr=="NaN"] <- NA_character_
+
+covidmr2 <- na.omit(covidmr)
+
+covidmr2$p <- as.numeric(covidmr2$p)
+
+# per SNP
+
+system('/Users/mk31/google-cloud-sdk/bin/gcloud compute scp "mohd-analysis-gsmr3-uk10k":~/sun_outcomes_covid2_sep2020_gsmr_results.eff_plot.gz ~/ --zone=europe-west1-d')
+
+source("/Users/mk31/gsmr_plot.r")
+
+covid_snp <- read_gsmr_data("/Users/mk31/sun_outcomes_covid2_sep2020_gsmr_results.eff_plot.gz")
+
+saveRDS(covid_snp, "/Users/mk31/sun_outcomes_covid2_sep2020_gsmr_results_snp.rds")
+
+# retrieve snp estimates
+  
+genes <- covidmr2$Exposure
+
+out <- covidmr2$Outcome
+  
+dfcovid <- lapply(seq_along(genes), function (y) {
+    
+    print(genes[y])
+    
+    source("/Users/mk31/gsmr_plot.r")
+    
+    df2 <- try(gsmr_snp_effect(gsmr_data = covid_snp, expo_str = genes[y], outcome_str = out[y]))
+    
+    if(is(df2, 'try-error')) {
+      
+      print(paste0(genes[y], " not tabulated"))
+      
+    } else {
+    
+    if(length(df2$bxy)==1) {
+      
+      df2 <- data.frame(df2, stringsAsFactors = F)
+      
+      df2$gene <- genes[y]
+      
+      df2$outcome <- out[y]
+      
+      df2
+      
+    } else {
+      
+      df2$bxy <- df2$bxy[[1]]
+      
+      df2 <- data.frame(df2, stringsAsFactors = F)
+      
+      df2$gene <- genes[y]
+      
+      df2$outcome <- out[y]
+      
+      df2
+      
+    }
+      
+      
+    }
+    })
+
+df2 <- data.table::rbindlist(dfcovid)
+
+# Separating per protein MR estimates by outcome
+
+out_unique <- unique(out)
+
+COVID19_HGI_A2_ALL_20200930_N <- covidmr2[covidmr2$Outcome=="COVID19_HGI_A2_ALL_20200930_N",]
+COVID19_HGI_B1_ALL_20200930_N <- covidmr2[covidmr2$Outcome=="COVID19_HGI_B1_ALL_20200930_N",]
+COVID19_HGI_B2_ALL_20200930_N <- covidmr2[covidmr2$Outcome=="COVID19_HGI_B2_ALL_20200930_N",]
+COVID19_HGI_C1_ALL_20200930_N <- covidmr2[covidmr2$Outcome=="COVID19_HGI_C1_ALL_20200930_N",]
+COVID19_HGI_C2_ALL_20200930_N <- covidmr2[covidmr2$Outcome=="COVID19_HGI_C2_ALL_20200930_N",]
+
+# Applying FDR to each
+
+COVID19_HGI_A2_ALL_20200930_N$p_fdr <- p.adjust(COVID19_HGI_A2_ALL_20200930_N$p, method = "BH")
+
+COVID19_HGI_B1_ALL_20200930_N$p_fdr <- p.adjust(COVID19_HGI_B1_ALL_20200930_N$p, method = "BH")
+
+COVID19_HGI_B2_ALL_20200930_N$p_fdr <- p.adjust(COVID19_HGI_B2_ALL_20200930_N$p, method = "BH")
+
+COVID19_HGI_C1_ALL_20200930_N$p_fdr <- p.adjust(COVID19_HGI_C1_ALL_20200930_N$p, method = "BH")
+
+COVID19_HGI_C2_ALL_20200930_N$p_fdr <- p.adjust(COVID19_HGI_C2_ALL_20200930_N$p, method = "BH")
+
+
+```
+
+
+## extract OAS cis-pQTLs and A2 (very severe disease vs. pop.)
+```{r}
+# OAS1
+
+system('/Users/mk31/google-cloud-sdk/bin/gcloud compute scp "mohd-analysis-gsmr3-uk10k:~/sun_gsmr/OAS1_10361_25_3_gsmr" "/Users/mk31/" --zone=europe-west1-d')
+
+oas <- data.table::fread("/Users/mk31/OAS1_10361_25_3_gsmr", stringsAsFactors = F)
+
+names(oas) <- c("Variant", "ea.x", "oa.x", "freq.x", "beta.x", "se.x", "pval.x", "n.x")
+
+system('/Users/mk31/google-cloud-sdk/bin/gcloud compute scp "mohd-analysis-gsmr3-uk10k:~/covid_sep2020/covid2-sep2020-gsmr-formatted/COVID19_HGI_A2_ALL_20200930_N.csv" "/Users/mk31/" --zone=europe-west1-d')
+
+A2 <- data.table::fread("/Users/mk31/COVID19_HGI_A2_ALL_20200930_N.csv", stringsAsFactors = F)
+
+names(A2) <- c("Variant", "ea.y", "oa.y", "freq.y", "beta.y", "se.y", "pval.y", "n.y")
+
+oas_A2 <- merge(oas, A2, by = "Variant")
+
+oas_A2 <- oas_A2[order(oas_A2$pval.x),]
+
+# Using GSMR R package for analysis
+
+# 1. Generating the LD correlation matrix
+
+# Save the genetic variants and effect alleles in a text file using R
+
+write.table(oas_A2[,c("Variant","ea.x")], "/Users/mk31/UKd10K/OAS1.allele", col.names=F, row.names=F, quote=F)
+
+# Extract the genotype data from a GWAS dataset using GCTA
+
+chr <- strsplit(oas_A2$Variant[1], ":")[[1]][1]
+
+files <- c("bed", "bim", "fam")
+
+sapply(seq_along(files), function (x) {
+  
+  file <- files[x]
+  
+  print(file)
+  
+  path <- paste0('/Users/mk31/google-cloud-sdk/bin/gcloud compute scp mohd-analysis-gsmr3-uk10k:~/ukb_v3_downsampled10k_plink/ukb_v3_chr', chr, '.downsampled10k.', file, ' /Users/mk31/UKd10K --zone=europe-west1-d')
+  
+  system(path)
+  
+})
+
+system("/Users/mk31/gcta64 --bfile /Users/mk31/UKd10K/ukb_v3_chr12.downsampled10k --extract /Users/mk31/UKd10K/OAS1.allele --update-ref-allele /Users/mk31/UKd10K/OAS1.allele --recode --out /Users/mk31/UKd10K/OAS1_ld")
+
+# remove the UKB genotyped files from system
+
+sapply(paste0("/Users/mk31/UKd10K/ukb_v3_chr12.downsampled10k.", files), unlink)
+
+# Estimate LD correlation matrix
+snp_coeff_id <- scan("/Users/mk31/UKd10K/OAS1_ld.xmat.gz", what="", nlines=1)
+snp_coeff <- read.table("/Users/mk31/UKd10K/OAS1_ld.xmat.gz", header=F, skip=2, na.strings=c("", "NA"))
+snp_coeff <- na.omit(snp_coeff)
+
+# Match the SNP genotype data with the summary data
+snp_id <- Reduce(intersect, list(oas_A2$Variant, snp_coeff_id))
+oas_A2 <- oas_A2[match(snp_id, oas_A2$Variant),]
+snp_order <- match(snp_id, snp_coeff_id)
+snp_coeff_id <- snp_coeff_id[snp_order]
+snp_coeff <- snp_coeff[, snp_order]
+
+# Calculate the LD correlation matrix
+ldrho <- cor(snp_coeff)
+colnames(ldrho) = rownames(ldrho) = snp_coeff_id
+
+dim(ldrho)
+
+library(gsmr)
+
+bzx = oas_A2$beta.x    # SNP effects on the risk factor
+bzx_se = oas_A2$se.x   # standard errors of bzx
+bzx_pval = oas_A2$pval.x   # p-values for bzx
+bzy = oas_A2$beta.y    # SNP effects on the disease
+bzy_se = oas_A2$se.y    # standard errors of bzy
+bzy_pval = oas_A2$pval.y # p-values for bzy
+
+n_ref = 10000    # Sample size of the reference sample
+gwas_thresh = 1e-5  # GWAS threshold to select SNPs as the instruments for the GSMR analysis
+single_snp_heidi_thresh = 0.01    # p-value threshold for single-SNP-based HEIDI-outlier analysis
+multi_snp_heidi_thresh = 0.01    # p-value threshold for multi-SNP-based HEIDI-outlier analysis
+nsnps_thresh = 1   # the minimum number of instruments required for the GSMR analysis
+heidi_outlier_flag = T    # flag for HEIDI-outlier analysis
+ld_r2_thresh = 0.05    # LD r2 threshold to remove SNPs in high LD
+ld_fdr_thresh = 0.05   # FDR threshold to remove the chance correlations between the SNP instruments
+gsmr2_beta = 0     # 0 - the original HEIDI-outlier method; 1 - the new HEIDI-outlier method that is currently under development 
+
+gsmr_results <- gsmr(bzx, bzx_se, bzx_pval, bzy, bzy_se, bzy_pval, ldrho, snp_coeff_id, n_ref, heidi_outlier_flag, gwas_thresh, single_snp_heidi_thresh, multi_snp_heidi_thresh, nsnps_thresh, ld_r2_thresh, ld_fdr_thresh, gsmr2_beta)    # GSMR analysis 
+
+# Q. Why was OAS1 not included as a protein in the GSMR analysis when GSMR is deployed en masse via bash? It might be a) because of the missing freqs in the reference sample for a few SNPs, resulting in NAs being generated and the protein excluded, b) I did not order the SNPs based on p-vals? and that makes a difference to what SNPs are selected as instruments after clumping. What I can do now, is compare how GSMR in bash for a protein with GSMR results (e.g. ABO) differs from GSMR of the same protein in R.
+
+
+
+```
+
+## extract ABO cis-pQTLs and C2 (covid vs. pop.)
+
+```{r}
+# ABO
+
+system('/Users/mk31/google-cloud-sdk/bin/gcloud compute scp "mohd-analysis-gsmr3-uk10k:~/sun_gsmr/ABO_9253_52_3_gsmr" "/Users/mk31/" --zone=europe-west1-d')
+
+ABO <- data.table::fread("/Users/mk31/ABO_9253_52_3_gsmr", stringsAsFactors = F)
+
+names(ABO) <- c("Variant", "ea.x", "oa.x", "freq.x", "beta.x", "se.x", "pval.x", "n.x")
+
+system('/Users/mk31/google-cloud-sdk/bin/gcloud compute scp "mohd-analysis-gsmr3-uk10k:~/covid_sep2020/covid2-sep2020-gsmr-formatted/COVID19_HGI_C2_ALL_20200930_N.csv" "/Users/mk31/" --zone=europe-west1-d')
+
+C2 <- data.table::fread("/Users/mk31/COVID19_HGI_C2_ALL_20200930_N.csv", stringsAsFactors = F)
+
+names(C2) <- c("Variant", "ea.y", "oa.y", "freq.y", "beta.y", "se.y", "pval.y", "n.y")
+
+ABO_C2 <- merge(ABO, C2, by = "Variant")
+
+ABO_C2_sig <- ABO_C2[ABO_C2$pval.x < 0.05,]
+
+ABO_C2_sig <- ABO_C2_sig[order(ABO_C2_sig$pval.x),]
+
+# Using GSMR R package for analysis
+
+# 1. Generating the LD correlation matrix
+
+# Save the genetic variants and effect alleles in a text file using R
+
+write.table(ABO_C2[,c("Variant","ea.x")], "/Users/mk31/UKd10K/ABO.allele", col.names=F, row.names=F, quote=F)
+
+# Extract the genotype data from a GWAS dataset using GCTA
+
+chr <- strsplit(ABO_C2$Variant[1], ":")[[1]][1]
+
+files <- c("bed", "bim", "fam")
+
+sapply(seq_along(files), function (x) {
+  
+  file <- files[x]
+  
+  print(file)
+  
+  path <- paste0('/Users/mk31/google-cloud-sdk/bin/gcloud compute scp mohd-analysis-gsmr3-uk10k:~/ukb_v3_downsampled10k_plink/ukb_v3_chr', chr, '.downsampled10k.', file, ' /Users/mk31/UKd10K --zone=europe-west1-d')
+  
+  system(path)
+  
+})
+
+ldrecode <- paste0("/Users/mk31/gcta64 --bfile /Users/mk31/UKd10K/ukb_v3_chr",chr, ".downsampled10k --extract /Users/mk31/UKd10K/ABO.allele --update-ref-allele /Users/mk31/UKd10K/ABO.allele --recode --out /Users/mk31/UKd10K/ABO_ld")
+
+system(ldrecode)
+
+# remove the UKB genotyped files from system
+
+sapply(paste0("/Users/mk31/UKd10K/ukb_v3_chr",chr,".downsampled10k.", files), unlink)
+
+# Estimate LD correlation matrix
+snp_coeff_id <- scan("/Users/mk31/UKd10K/ABO_ld.xmat.gz", what="", nlines=1)
+snp_coeff <- read.table("/Users/mk31/UKd10K/ABO_ld.xmat.gz", header=F, skip=2, na.strings=c("", "NA"))
+snp_coeff <- na.omit(snp_coeff)
+
+# Match the SNP genotype data with the summary data
+snp_id <- Reduce(intersect, list(ABO_C2_sig$Variant, snp_coeff_id))
+ABO_C2_sig <- ABO_C2_sig[match(snp_id, ABO_C2_sig$Variant),]
+snp_order <- match(snp_id, snp_coeff_id)
+snp_coeff_id <- snp_coeff_id[snp_order]
+snp_coeff <- snp_coeff[, snp_order]
+
+# Calculate the LD correlation matrix
+ldrho <- cor(snp_coeff)
+colnames(ldrho) = rownames(ldrho) = snp_coeff_id
+
+dim(ldrho)
+
+library(gsmr)
+
+bzx = ABO_C2_sig$beta.x    # SNP effects on the risk factor
+bzx_se = ABO_C2_sig$se.x   # standard errors of bzx
+bzx_pval = ABO_C2_sig$pval.x   # p-values for bzx
+bzy = ABO_C2_sig$beta.y    # SNP effects on the disease
+bzy_se = ABO_C2_sig$se.y    # standard errors of bzy
+bzy_pval = ABO_C2_sig$pval.y # p-values for bzy
+
+n_ref = 10000    # Sample size of the reference sample
+gwas_thresh = 1e-5  # GWAS threshold to select SNPs as the instruments for the GSMR analysis
+single_snp_heidi_thresh = 0.01    # p-value threshold for single-SNP-based HEIDI-outlier analysis
+multi_snp_heidi_thresh = 0.01    # p-value threshold for multi-SNP-based HEIDI-outlier analysis
+nsnps_thresh = 5   # the minimum number of instruments required for the GSMR analysis
+heidi_outlier_flag = T    # flag for HEIDI-outlier analysis
+ld_r2_thresh = 0.05    # LD r2 threshold to remove SNPs in high LD
+ld_fdr_thresh = 0.05   # FDR threshold to remove the chance correlations between the SNP instruments
+gsmr2_beta = 0     # 0 - the original HEIDI-outlier method; 1 - the new HEIDI-outlier method that is currently under development 
+
+gsmr_results <- gsmr(bzx, bzx_se, bzx_pval, bzy, bzy_se, bzy_pval, ldrho, snp_coeff_id, n_ref, heidi_outlier_flag, gwas_thresh, single_snp_heidi_thresh, multi_snp_heidi_thresh, nsnps_thresh, ld_r2_thresh, ld_fdr_thresh, gsmr2_beta)    # GSMR analysis 
+
+# compare estimates with GSMR in bash
+
+covidmr <- data.table::fread("/Users/mk31/sun_outcomes_covid2_sep2020_gsmr_results_1snp.gsmr", stringsAsFactors = F)
+
+covidmr[covidmr=="NaN"] <- NA_character_
+
+covidmr2 <- na.omit(covidmr)
+
+covidmr2$p <- as.numeric(covidmr2$p)
+
+# GSMR bash ABO stats don't match GSMR R-based ABO stats (what's wrong? pval.x remains 000 in GSMR R, does GSMR bash separately derive p-values from SEs? Does that matter and explain the difference in the pvals of ABO-C2:COVID?)
+```
+
+## Compare estimates using ABO SNPs selected by GSMR with MR-IVW
+
+```{r}
+snps_pos_abo <- gsmr_results$used_index
+
+ABO_C2_mr <- ABO_C2[snps_pos_abo,]
+
+snps_pos_abo_v2 <- gsmr_results$used_index
+
+ABO_C2_mr_v2 <- ABO_C2_sig[snps_pos_abo,]
+
+# snps used for ABO in GSMR bash
+
+covid <- readRDS("/Users/mk31/sun_outcomes_covid2_sep2020_gsmr_results_snp.rds")
+
+source("/Users/mk31/gsmr_plot.r")
+
+abo <- gsmr_snp_effect(gsmr_data = covid, expo_str = "ABO_9253_52_3_gsmr", outcome_str = "COVID19_HGI_C2_ALL_20200930_N")
+
+abo2 <- data.frame(abo, stringsAsFactors = F)
+
+# lets check if we get similar estimates with MR-IVW method, with and without accounting for correlation
+
+## without correlation
+
+library(MendelianRandomization)
+
+abo_covid_mr_ivw <- mr_ivw(mr_input(bx = abo2$bzx, bxse = abo2$bzx_se, by = abo2$bzy, byse = abo2$bzy_se), model = "fixed")
+```
+
+
 
